@@ -59,6 +59,11 @@ cat << EOF > fort.41
  atm_files_input_grid="${ATMFILE}"
  sfc_files_input_grid="${SFCFILE}"
  vcoord_file_target_grid="${FIX_AM}/global_hyblev.l${LEVS}.txt"
+ lsoil_input=${lsoil_input}
+ soil_depth_input=${soil_depth_input}
+ nsoill_out=${nsoill_out}
+ soil_depth_target=${soil_depth_target}
+ sotyp_from_climo=.true.
  cycle_mon=$mm
  cycle_day=$dd
  cycle_hour=$hh

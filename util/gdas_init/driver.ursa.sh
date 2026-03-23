@@ -15,6 +15,10 @@ module load build.$target.$compiler
 module load prod_util/2.1.1
 module list
 
+export FOR_COARRAY_STACK_SIZE=512M
+export KMP_STACKSIZE=512M
+ulimit -s unlimited
+
 PROJECT_CODE=fv3-cpu
 QUEUE=batch
 

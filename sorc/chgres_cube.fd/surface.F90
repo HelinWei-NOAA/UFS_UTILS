@@ -3,21 +3,6 @@
 !! Temperature (NSST) fields.
 !! @author George Gayno NCEP/EMC
 
-!> Process surface and nst fields. Interpolates fields from the input
-!! to target grids. Adjusts soil temperature according to differences
-!! in input and target grid terrain. Rescales soil moisture for soil
-!! type differences between input and target grid. Computes frozen
-!! portion of total soil moisture.
-!!
-!! Assumes the input land data are Noah LSM-based, and the fv3 run
-!! will use the Noah LSM. NSST fields are not available when using
-!! GRIB2 input data.
-!!
-!! Public variables are defined below. "target" indicates field
-!! associated with the target grid. "input" indicates field associated
-!! with the input grid.
-!!
-!! @author George Gayno NCEP/EMC
  module surface
 
  use esmf
@@ -48,53 +33,32 @@
 
  use write_data, only : write_fv3_sfc_data_netcdf
 
- use utilities, only  : error_handler
+ use utilities, only  : error_handler, interp_soil_vertical
 
  implicit none
 
  private
 
- integer, parameter                 :: veg_type_landice_target = 15
-                                       !< Vegetation type category that
-                                       !< defines permanent land ice points.
-                                       !< The Noah LSM land ice physics
-                                       !< are applied at these points.
-
- type(esmf_field)                   :: soil_type_from_input_grid
-                                       !< soil type interpolated from
-                                       !< input grid
- type(esmf_field)                   :: terrain_from_input_grid
-                                       !< terrain height interpolated
-                                       !< from input grid
- type(esmf_field)                   :: terrain_from_input_grid_land
-                                       !< terrain height interpolated
-                                       !< from input grid at all land points 
+ integer, parameter                :: veg_type_landice_target = 15
+ type(esmf_field)                  :: soil_type_from_input_grid
+ type(esmf_field)                  :: terrain_from_input_grid
+ type(esmf_field)                  :: terrain_from_input_grid_land
 
  real, parameter, private           :: blim        = 5.5
-                                       !< soil 'b' parameter limit
  real, parameter, private           :: frz_h2o     = 273.15
-                                       !< melting pt water
  real, parameter, private           :: frz_ice     = 271.21
-                                       !< melting pt sea ice
  real, parameter, private           :: grav        = 9.81
-                                       !< gravity
  real, parameter, private           :: hlice       = 3.335E5
-                                       !< latent heat of fusion
 
  real(esmf_kind_r8), parameter, private :: missing = -1.e20_esmf_kind_r8
-                                           !< flag for non-active points.
-                                       
 
  type realptr_2d
    real(esmf_kind_r8), pointer :: p(:,:)
-                                       !< array of 2d pointers
  end type realptr_2d
-                                       !< pointer to hold array of 2d pointers 
-  type realptr_3d
+
+ type realptr_3d
    real(esmf_kind_r8), pointer :: p(:,:,:)
-                                       !< array of 3d pointers
  end type realptr_3d
-                                       !< pointer to hold array of 3d pointers
 
  public :: surface_driver
  public :: create_nst_esmf_fields
@@ -106,149 +70,97 @@
 
  contains
 
-!> Driver routine to process surface/nst data
-!!
-!! @param[in] localpet  ESMF local persistent execution thread
-!!
-!! @author George Gayno NCEP/EMC
  subroutine surface_driver(localpet)
 
- use sfc_input_data, only            : cleanup_input_sfc_data, &
-                                       read_input_sfc_data
+ use sfc_input_data, only            : read_input_sfc_data, cleanup_input_sfc_data, &
+                                       soilm_tot_input_grid, soil_temp_input_grid, &
+                                       soil_type_input_grid, soilm_liq_input_grid, &
+                                       i_input, j_input
 
  use nst_input_data, only            : cleanup_input_nst_data, &
+                                       read_input_nst_data, &
                                        read_input_nst_data
+ use program_setup, only             : calc_soil_params_driver, convert_nst, &
+                                       nsoill_out, soil_depth_target, &
+                                       lsoil_input, soil_depth_input, &
+                                       maxsmc_target, satpsi_target, bb_target
 
- use program_setup, only             : calc_soil_params_driver, &
-                                       convert_nst
-                                  
- use static_data, only               :  get_static_fields, &
-                                       cleanup_static_fields
+ use static_data, only               : get_static_fields, &
+                                       cleanup_static_fields, &
+                                       soil_type_target_grid
+
+ use model_grid, only                : i_target, j_target, lsoil_target
 
  use surface_target_data, only       : cleanup_target_nst_data
-
- use utilities, only                 : error_handler
 
  implicit none
 
  integer, intent(in)                :: localpet
+ integer                            :: im_total
+ real(esmf_kind_r8), pointer        :: stc_tgt_ptr(:,:,:), smc_tgt_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: slc_tgt_ptr(:,:,:), styp_tgt_ptr(:,:)
+ integer                            :: rc
 
-!-----------------------------------------------------------------------
-! Compute soil-based parameters.
-!-----------------------------------------------------------------------
-
+ ! 1. Initialization and Input Reading
  call calc_soil_params_driver(localpet)
-
-!-----------------------------------------------------------------------
-! Get static data (like vegetation type) on the target grid.
-!-----------------------------------------------------------------------
-
  call get_static_fields(localpet)
-
-!-----------------------------------------------------------------------
-! Read surface data on input grid.
-!-----------------------------------------------------------------------
-
  call read_input_sfc_data(localpet)
-
-!-----------------------------------------------------------------------
-! Read nst data on input grid.
-!-----------------------------------------------------------------------
 
  if (convert_nst) call read_input_nst_data(localpet)
 
-!-----------------------------------------------------------------------
-! Create surface field objects for target grid.
-!-----------------------------------------------------------------------
-
+ ! 2. Create Target ESMF Fields
+ ! These are created with the 10-layer vertical structure (lsoil_target)
  call create_surface_esmf_fields
-
-!-----------------------------------------------------------------------
-! Create nst field objects for target grid.
-!-----------------------------------------------------------------------
-
  if (convert_nst) call create_nst_esmf_fields
- 
-!-----------------------------------------------------------------------
-! Adjust soil levels of input grid !! not implemented yet
-!-----------------------------------------------------------------------
 
- call adjust_soil_levels(localpet)
-
-!-----------------------------------------------------------------------
-! Horizontally interpolate fields.
-!-----------------------------------------------------------------------
-
+ ! 3. Horizontal Interpolation (Regrid 4-layer input to target grid)
  call interp(localpet)
- 
-!---------------------------------------------------------------------------------------------
-! Adjust soil/landice column temperatures for any change in elevation between  the
-! input and target grids.
-!---------------------------------------------------------------------------------------------
 
+ ! 4. Vertical Interpolation (Moved here: Process 4 layers to 10 layers on Target Grid)
+ im_total = i_target * j_target
+
+ ! Extract pointers from the TARGET grid fields
+ call ESMF_FieldGet(soil_temp_target_grid, farrayPtr=stc_tgt_ptr, rc=rc)
+ call ESMF_FieldGet(soilm_tot_target_grid, farrayPtr=smc_tgt_ptr, rc=rc)
+ call ESMF_FieldGet(soilm_liq_target_grid, farrayPtr=slc_tgt_ptr, rc=rc)
+ call ESMF_FieldGet(soil_type_target_grid, farrayPtr=styp_tgt_ptr, rc=rc)
+
+ if (localpet == 0) print*,"- CALL interp_soil_vertical ON TARGET GRID FOR 10-LAYER STRUCTURE"
+
+ call interp_soil_vertical(im_total, &
+                           lsoil_input, &
+                           nsoill_out, &
+                           soil_depth_input, &
+                           soil_depth_target, &
+                           smc_tgt_ptr, &           ! SMC_IN
+                           stc_tgt_ptr, &           ! STC_IN
+                           nint(styp_tgt_ptr), &    ! Use high-res target soil types
+                           maxsmc_target, &
+                           satpsi_target, &
+                           bb_target, &
+                           smc_tgt_ptr, &           ! SMC_OUT
+                           stc_tgt_ptr, &           ! STC_OUT
+                           slc_tgt_ptr)             ! SLC_OUT
+
+ ! 5. Final Surface Physics and Adjustments
  call adjust_soilt_for_terrain
- 
-!---------------------------------------------------------------------------------------------
-! Rescale soil moisture for changes in soil type between the input and target grids.
-!---------------------------------------------------------------------------------------------
-
  call rescale_soil_moisture
- 
-!---------------------------------------------------------------------------------------------
-! Compute liquid portion of total soil moisture.
-!---------------------------------------------------------------------------------------------
-
  call calc_liq_soil_moisture
-
-!---------------------------------------------------------------------------------------------
-! Set z0 at water and sea ice.
-!---------------------------------------------------------------------------------------------
-
  call roughness
-
-!---------------------------------------------------------------------------------------------
-! Perform some final qc checks.
-!---------------------------------------------------------------------------------------------
-
  call qc_check
-
-!---------------------------------------------------------------------------------------------
-! Set flag values at land for nst fields.
-!---------------------------------------------------------------------------------------------
 
  if (convert_nst) call nst_land_fill
 
-!---------------------------------------------------------------------------------------------
-! Free up memory.
-!---------------------------------------------------------------------------------------------
-
+ ! 6. Cleanup and Output
  call cleanup_input_sfc_data
-
  if (convert_nst) call cleanup_input_nst_data
 
-!---------------------------------------------------------------------------------------------
-! Update land mask for ice.
-!---------------------------------------------------------------------------------------------
- 
  call update_landmask
-
-!---------------------------------------------------------------------------------------------
-! Write data to file.
-!---------------------------------------------------------------------------------------------
-
  call write_fv3_sfc_data_netcdf(localpet)
 
-!---------------------------------------------------------------------------------------------
-! Free up memory.
-!---------------------------------------------------------------------------------------------
-
  if (convert_nst) call cleanup_target_nst_data
-
  call cleanup_all_target_sfc_data
-
  call cleanup_static_fields
-
- return
 
  end subroutine surface_driver
 
@@ -1880,6 +1792,9 @@
 
         soilt_target = nint(soil_type_target_ptr(i,j))
         soilt_input  = nint(soil_type_input_ptr(i,j))
+! --- ADDED SAFETY CHECK ---
+! If soil type is 0 or out of range, we cannot rescale.
+        if (soilt_input <= 0 .or. soilt_target <= 0) cycle
 
 !---------------------------------------------------------------------------------------------
 ! Rescale soil moisture at points where the soil type between the input and output
