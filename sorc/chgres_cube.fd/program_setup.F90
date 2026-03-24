@@ -382,12 +382,14 @@
    real, intent(out) :: satdw(num_soil_cats), refsmc(num_soil_cats), drysmc(num_soil_cats), wltsmc(num_soil_cats)
    integer :: i ; real :: rs1, ws1
    do i = 1, num_soil_cats
-     if (maxsmc(i) > 0.0) then
+     ! Safety: Avoid division by zero if satdk is uninitialized
+     if (maxsmc(i) > 0.0 .and. satdk(i) > 1.e-10) then
        satdw(i) = bb(i)*satdk(i)*(satpsi(i)/maxsmc(i))
        rs1 = maxsmc(i)*(5.79E-9/satdk(i))**(1.0/(2.0*bb(i)+3.0))
        refsmc(i) = rs1 + (maxsmc(i)-rs1)/smhigh
        ws1 = maxsmc(i)*(200.0/satpsi(i))**(-1.0/bb(i))
-       wltsmc(i) = ws1 - smlow*ws1 ; drysmc(i) = wltsmc(i)
+       wltsmc(i) = ws1 - smlow*ws1
+       drysmc(i) = wltsmc(i)
      endif
    enddo
  end subroutine calc_soil_params

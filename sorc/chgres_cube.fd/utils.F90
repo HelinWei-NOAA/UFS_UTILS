@@ -85,7 +85,7 @@ print *, "DEBUG: size(stc_in)=", size(stc_in), " size(stc_out)=", size(stc_out)
                 slc_out(i,k) = smc_out(i,k)
             else
                 smc_matric = hfus * (tfreeze - stc_out(i,k)) / (grav * stc_out(i,k))
-                slc_out(i,k) = porosity * (smc_matric / psisat)**(-1.0 / bexp)
+                slc_out(i,k) = porosity * (max(1.e-10_esmf_kind_r8, smc_matric / psisat))**(-1.0 / bexp)
                 if (slc_out(i,k) > smc_out(i,k)) slc_out(i,k) = smc_out(i,k)
             endif
         enddo

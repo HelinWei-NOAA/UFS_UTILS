@@ -143,6 +143,8 @@
                            smc_final_ptr, stc_final_ptr, slc_final_ptr)
 
 ! 6. Re-create ESMF Fields at the FINAL resolution for NetCDF Output
+ ! CRITICAL: Nullify pointers to prevent dangling associations [cite: 144]
+   nullify(stc_proc_ptr, smc_proc_ptr, slc_proc_ptr)
  call ESMF_FieldDestroy(soil_temp_target_grid, rc=rc)
  call ESMF_FieldDestroy(soilm_tot_target_grid, rc=rc)
  call ESMF_FieldDestroy(soilm_liq_target_grid, rc=rc)
@@ -321,6 +323,7 @@
                             t2m_target_grid, &
                             polemethod=ESMF_POLEMETHOD_ALLAVG, &
                             srctermprocessing=isrctermprocessing, &
+                            unmappedaction=ESMF_UNMAPPEDACTION_IGNORE, &
                             routehandle=regrid_bl_no_mask, &
                             regridmethod=method, rc=rc)
  if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
