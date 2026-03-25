@@ -198,9 +198,6 @@
      allocate(slc_final_ptr(i_target, j_target, nsoill_out))
 
      im_total = i_target * j_target
-     write(*,*)soil_depth_input, soil_depth_target
-     write(*,*)maxsmc_target, satpsi_target
-     stop
 
      call interp_soil_vertical(im_total, lsoil_input, nsoill_out, &
                                soil_depth_input, soil_depth_target, &
