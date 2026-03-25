@@ -1927,18 +1927,10 @@ module sfc_input_data
 
        if (rc /= 0) exit
 
-       if (gfld%discipline == 2) then ! discipline - land products
-         if (gfld%ipdtnum == pdt_num) then  ! prod template number - analysis or forecast at single level.
-           if (gfld%ipdtmpl(1) == 0 .and. gfld%ipdtmpl(2) == 2) then  ! soil temp
-                                                                      ! Sect4/octs 10 and 11
-             if (gfld%ipdtmpl(10) == 106 .and. gfld%ipdtmpl(13) == 106) then  ! Sect4/octs 23/29.
-                                                                              ! Layer below ground.
-               lsoil_input = lsoil_input + 1
-             endif
-           endif
-         endif
+       if (gfld%discipline == 2 .and. gfld%ipdtmpl(10) == 106) then
+        lsoil_input = lsoil_input + 1
        endif
-    
+
        j = k
 
      enddo

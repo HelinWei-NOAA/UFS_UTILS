@@ -100,8 +100,11 @@
                                                   !! are applied (regional target grids).
  integer, public                 :: halo_blend = 0 !< Number of row/cols of blending halo, where model 
                                                    !! tendencies and lateral boundary tendencies are applied. Regional target grids only.
+ integer, public                 :: lsoil_input = 4
+ real(esmf_kind_r8), allocatable, public     :: soil_depth_input(:)
  integer, public                 :: nsoill_out = 4 !< Number of soil levels desired in the output data. 
                                                    !! chgres_cube can interpolate from 9 input to 4 output levels. DEFAULT: 4.
+ real(esmf_kind_r8), allocatable, public     :: soil_depth_target(:)
 
  logical, public                 :: convert_atm = .false. !< Convert atmospheric data when true.
  logical, public                 :: convert_nst = .false. !< Convert nst data when true.
@@ -206,7 +209,7 @@
                    tracers_input, &
                    halo_bndy, & 
                    halo_blend, &
-                   nsoill_out, &
+                   nsoill_out, soil_depth_target, lsoil_input, soil_depth_input,&
                    thomp_mp_climo_file
 
  if (present(filename)) then
@@ -220,6 +223,8 @@
  if (myrank == 0) then
    print*,"- READ SETUP NAMELIST"
    open(41, file=trim(filename_to_use), iostat=ierr)
+   if (.not. allocated(soil_depth_input)) allocate(soil_depth_input(100))
+   if (.not. allocated(soil_depth_target)) allocate(soil_depth_target(100))
    if (ierr /= 0) call error_handler("OPENING SETUP NAMELIST.", ierr)
    read(41, nml=config, iostat=ierr)
    if (ierr /= 0) call error_handler("READING SETUP NAMELIST.", ierr)
@@ -277,7 +282,15 @@
  enddo
  call mpi_bcast(halo_bndy,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
  call mpi_bcast(halo_blend,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+ ! Broadcast input soil structure
+ call mpi_bcast(lsoil_input, 1, MPI_INTEGER, 0, mpi_comm_world, ierr)
+ if (.not. allocated(soil_depth_input)) allocate(soil_depth_input(lsoil_input))
+ call mpi_bcast(soil_depth_input, lsoil_input, MPI_REAL8, 0, mpi_comm_world, ierr)
+ ! Broadcast target soil structure
  call mpi_bcast(nsoill_out,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+ if (.not. allocated(soil_depth_target)) allocate(soil_depth_target(nsoill_out))
+ call mpi_bcast(soil_depth_target, nsoill_out, MPI_REAL8, 0, mpi_comm_world, ierr)
+
  call mpi_bcast(thomp_mp_climo_file,len(thomp_mp_climo_file),MPI_CHARACTER,0,MPI_COMM_WORLD,ierr)
  
  call to_lower(input_type)
