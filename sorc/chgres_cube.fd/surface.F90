@@ -2045,18 +2045,44 @@
 !! @param[in] localpet  ESMF local persistent execution thread
 !! @author Larissa Reames
 !! @author Jeff Beck
+!! @author Helin Wei & Michael Barlage 
+
  subroutine adjust_soil_levels(localpet)
  use model_grid, only       : lsoil_target, i_input, j_input, input_grid
  use sfc_input_data, only   : lsoil_input, soil_temp_input_grid, &
-                              soilm_liq_input_grid, soilm_tot_input_grid
+                              soilm_liq_input_grid, soilm_tot_input_grid, &
+                              skin_temp_input_grid
+ use static_data, only      : substrate_temp_target_grid, & ! TG3 from static data
+                              soil_type_target_grid
+ use program_setup, only    : soil_depth_target, maxsmc_target, bb_target, satpsi_target
+
+   
+
  implicit none
  integer, intent(in)                   :: localpet
  character(len=500)       :: msg
  character(len=2)         :: lsoil_input_ch, lsoil_target_ch
- integer                  :: rc
+ integer                  :: rc, i, j, k, lhave, lwant, styp
+ real(esmf_kind_r8), allocatable :: in_3d(:,:,:), out_3d(:,:,:)
+ real(esmf_kind_r8), allocatable :: out_stc_temp(:,:,:)
+ real(esmf_kind_r8), allocatable :: in_skint(:,:), in_tg3(:,:), in_styp(:,:)
  real(esmf_kind_r8)          :: tmp(i_input,j_input), &
                                 data_one_tile(i_input,j_input,lsoil_input), &
                                 tmp3d(i_input,j_input,lsoil_target)
+! Physics parameters for liquid water derivation
+ real(esmf_kind_r8) :: porosity, bexp, psisat, soil_matric_potential, supercool_water
+ real(esmf_kind_r8), parameter :: temperature_freezing = 273.15_esmf_kind_r8
+ real(esmf_kind_r8), parameter :: latent_heat_fusion  = 3.335E5_esmf_kind_r8
+ real(esmf_kind_r8), parameter :: gravity             = 9.81_esmf_kind_r8
+
+! Hardwired 4-layer input depths (meters)
+ real(esmf_kind_r8) :: h_depth_in(4) = (/0.1, 0.4, 1.0, 2.0/) 
+ real(esmf_kind_r8) :: interp_levs(0:5) 
+ real(esmf_kind_r8) :: stc_col(0:5), smc_col(0:5), target_mid
+
+ if (lsoil_input == lsoil_target) return
+
+
  if (lsoil_input == 9 .and. lsoil_target == 4) then
    print*, "CONVERTING FROM 9 INPUT SOIL LEVELS TO 4 TARGET SOIL LEVELS"
    call ESMF_FieldGather(soil_temp_input_grid, data_one_tile, rootPet=0, tile=1, rc=rc)
@@ -2153,9 +2179,92 @@
       // lsoil_target_ch // " MUST EITHER BE EQUAL OR 9 AND 4 RESPECTIVELY."
   call error_handler(msg, rc)
  endif
- 
- end subroutine adjust_soil_levels
 
+ if (lsoil_input == 4 ) then
+
+! Allocate static/anchor fields first
+     if (localpet == 0) then
+       allocate(in_skint(i_input,j_input), in_tg3(i_input,j_input), in_styp(i_input,j_input))
+       allocate(out_3d(i_input,j_input,lsoil_target))
+       allocate(in_3d(i_input,j_input,4))
+     endif
+! Gather Anchors
+     call ESMF_FieldGather(skin_temp_input_grid, in_skint, rootPet=0, tile=1, rc=rc)
+     call ESMF_FieldGather(substrate_temp_target_grid, in_tg3, rootPet=0, tile=1, rc=rc)
+     call ESMF_FieldGather(soil_type_target_grid, in_styp, rootPet=0, tile=1, rc=rc)
+
+! --- STEP A: TEMPERATURE ---
+     call ESMF_FieldGather(soil_temp_input_grid, in_3d, rootPet=0, tile=1, rc=rc)
+     if (localpet == 0) then
+       interp_levs(0)=0.0; interp_levs(1)=0.05; interp_levs(2)=0.25; interp_levs(3)=0.7; interp_levs(4)=1.5; 
+       interp_levs(5)=soil_depth_target(lsoil_target) 
+       do j=1,j_input; do i=1,i_input
+         stc_col(0)=in_skint(i,j); stc_col(1:4)=in_3d(i,j,:); stc_col(5)=in_tg3(i,j)
+         do lwant=1,lsoil_target
+           target_mid = merge(0.5*soil_depth_target(1), 0.5*(soil_depth_target(lwant)+soil_depth_target(lwant-1)), lwant==1)
+           do lhave=0,4
+             if (target_mid >= interp_levs(lhave) .and. target_mid <= interp_levs(lhave+1)) then
+               out_3d(i,j,lwant) = stc_col(lhave+1) + (target_mid-interp_levs(lhave+1)) * (stc_col(lhave)-stc_col(lhave+1)) / (interp_levs(lhave)-interp_levs(lhave+1))
+               exit
+             endif
+           enddo
+         enddo
+       enddo; enddo
+     endif
+     call ESMF_FieldDestroy(soil_temp_input_grid, rc=rc)
+     soil_temp_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc) 
+     call ESMF_FieldScatter(soil_temp_input_grid, out_3d, rootpet=0, rc=rc) 
+
+! --- STEP B: TOTAL MOISTURE ---
+     call ESMF_FieldGather(soilm_tot_input_grid, in_3d, rootPet=0, tile=1, rc=rc)
+     if (localpet == 0) then
+       do j=1,j_input; do i=1,i_input
+         smc_col(1:4)=in_3d(i,j,:); smc_col(0)=smc_col(1); smc_col(5)=smc_col(4)
+         do lwant=1,lsoil_target
+           target_mid = merge(0.5*soil_depth_target(1), 0.5*(soil_depth_target(lwant)+soil_depth_target(lwant-1)), lwant==1)
+           do lhave=0,4
+             if (target_mid >= interp_levs(lhave) .and. target_mid <= interp_levs(lhave+1)) then
+               out_3d(i,j,lwant) = smc_col(lhave+1) + (target_mid-interp_levs(lhave+1)) * (smc_col(lhave)-smc_col(lhave+1)) / (interp_levs(lhave)-interp_levs(lhave+1))
+               exit
+             endif
+           enddo
+         enddo
+       enddo; enddo
+     endif
+     call ESMF_FieldDestroy(soilm_tot_input_grid, rc=rc)
+     soilm_tot_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc) 
+     call ESMF_FieldScatter(soilm_tot_input_grid, out_3d, rootpet=0, rc=rc)
+
+! --- STEP C: LIQUID MOISTURE (PHYSICS DERIVED) ---
+     ! Re-gather Temperature (out_3d currently holds moisture, we need temperature back)
+     call ESMF_FieldGather(soil_temp_input_grid, out_stc_temp, rootPet=0, tile=1, rc=rc) ! Temporary local use
+     if (localpet == 0) then
+       do j=1,j_input; do i=1,i_input
+         styp = nint(in_styp(i,j))
+         if (styp <= 0 .or. styp > 16) styp = 16
+         porosity = real(maxsmc_target(styp), esmf_kind_r8)
+         bexp     = real(bb_target(styp), esmf_kind_r8)
+         psisat   = real(satpsi_target(styp), esmf_kind_r8)
+         do lwant=1,lsoil_target
+! Derived using the Moisture in out_3d and Temperature in out_stc_temp
+           if(out_stc_temp(i,j,lwant) >= temperature_freezing) then
+             out_3d(i,j,lwant) = out_3d(i,j,lwant) ! Liquid = Total 
+           else
+             soil_matric_potential = latent_heat_fusion * (temperature_freezing - out_stc_temp(i,j,lwant)) / &
+                                     (gravity * out_stc_temp(i,j,lwant))
+             supercool_water = porosity * (max(1.e-8_esmf_kind_r8, soil_matric_potential/abs(psisat)))**(-1./bexp) 
+             out_3d(i,j,lwant) = min(supercool_water, out_3d(i,j,lwant)) 
+           endif
+         enddo
+       enddo; enddo
+     endif
+     call ESMF_FieldDestroy(soilm_liq_input_grid, rc=rc) 
+     soilm_liq_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc) 
+     call ESMF_FieldScatter(soilm_liq_input_grid, out_3d, rootpet=0, rc=rc)
+
+     if (localpet == 0) deallocate(in_3d, out_3d, in_skint, in_tg3, in_styp)
+   endif
+ end subroutine adjust_soil_levels
 !> Set roughness length at points with some sea ice to 1 cm.
 !! Set flag value at points with some or all open water.
 !!
@@ -3162,6 +3271,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr_3d = init_val
+ nullify(target_ptr_3d) ! Release pointer to reduce memory pressure
 
  print*,"- CALL FieldCreate FOR TARGET GRID TOTAL SOIL MOISTURE."
  soilm_tot_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3180,6 +3290,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr_3d = init_val
+ nullify(target_ptr_3d)
 
  print*,"- CALL FieldCreate FOR TARGET GRID LIQUID SOIL MOISTURE."
  soilm_liq_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3198,6 +3309,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr_3d = init_val
+ nullify(target_ptr_3d)
 
  end subroutine create_surface_esmf_fields
 
@@ -3731,6 +3843,12 @@
  call ESMF_FieldDestroy(terrain_from_input_grid, rc=rc)
  call ESMF_FieldDestroy(terrain_from_input_grid_land, rc=rc)
  call ESMF_FieldDestroy(soil_type_from_input_grid, rc=rc)
+
+! Explicitly destroy the expanded 10-layer soil fields to free up RAM
+ call ESMF_FieldDestroy(soil_temp_target_grid, rc=rc)
+ call ESMF_FieldDestroy(soilm_tot_target_grid, rc=rc)
+ call ESMF_FieldDestroy(soilm_liq_target_grid, rc=rc)
+ call ESMF_FieldDestroy(ice_temp_target_grid, rc=rc)
 
  call cleanup_target_sfc_data
 
