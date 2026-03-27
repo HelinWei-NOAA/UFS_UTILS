@@ -2054,7 +2054,8 @@
                               skin_temp_input_grid
  use static_data, only      : substrate_temp_target_grid, & ! TG3 from static data
                               soil_type_target_grid
- use program_setup, only    : soil_depth_target, maxsmc_target, bb_target, satpsi_target
+ use program_setup, only    : soil_depth_target, maxsmc_target, bb_target, &
+                              satpsi_target, wltsmc_target, refsmc_target
 
    
 
@@ -2070,7 +2071,8 @@
                                 data_one_tile(i_input,j_input,lsoil_input), &
                                 tmp3d(i_input,j_input,lsoil_target)
 ! Physics parameters for liquid water derivation
- real(esmf_kind_r8) :: porosity, bexp, psisat, soil_matric_potential, supercool_water
+ real(esmf_kind_r8) :: porosity, bexp, psisat, wilting_point, field_capacity
+ real(esmf_kind_r8) :: soil_matric_potential, supercool_water
  real(esmf_kind_r8), parameter :: temperature_freezing = 273.15_esmf_kind_r8
  real(esmf_kind_r8), parameter :: latent_heat_fusion  = 3.335E5_esmf_kind_r8
  real(esmf_kind_r8), parameter :: gravity             = 9.81_esmf_kind_r8
@@ -2079,6 +2081,7 @@
  real(esmf_kind_r8) :: h_depth_in(4) = (/0.1, 0.4, 1.0, 2.0/) 
  real(esmf_kind_r8) :: interp_levs(0:5) 
  real(esmf_kind_r8) :: stc_col(0:5), smc_col(0:5), target_mid
+ real(esmf_kind_r8) :: level_thick(lsoil_target), level_water(lsoil_target)
 
  if (lsoil_input == lsoil_target) return
 
@@ -2186,12 +2189,21 @@
      if (localpet == 0) then
        allocate(in_skint(i_input,j_input), in_tg3(i_input,j_input), in_styp(i_input,j_input))
        allocate(out_3d(i_input,j_input,lsoil_target))
+       allocate(out_stc_temp(i_input,j_input,lsoil_target))
        allocate(in_3d(i_input,j_input,4))
      endif
 ! Gather Anchors
      call ESMF_FieldGather(skin_temp_input_grid, in_skint, rootPet=0, tile=1, rc=rc)
      call ESMF_FieldGather(substrate_temp_target_grid, in_tg3, rootPet=0, tile=1, rc=rc)
      call ESMF_FieldGather(soil_type_target_grid, in_styp, rootPet=0, tile=1, rc=rc)
+
+! Calculate Layer Thicknesses
+     if (localpet == 0) then
+        level_thick(1) = soil_depth_target(1)
+        do k = 2, lsoil_target
+           level_thick(k) = soil_depth_target(k) - soil_depth_target(k-1)
+        end do
+     endif
 
 ! --- STEP A: TEMPERATURE ---
      call ESMF_FieldGather(soil_temp_input_grid, in_3d, rootPet=0, tile=1, rc=rc)
@@ -2215,11 +2227,13 @@
      soil_temp_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc) 
      call ESMF_FieldScatter(soil_temp_input_grid, out_3d, rootpet=0, rc=rc) 
 
-! --- STEP B: TOTAL MOISTURE ---
+! --- STEP B: TOTAL MOISTURE INTERPOLATION AND REDISTRIBUTION ---
      call ESMF_FieldGather(soilm_tot_input_grid, in_3d, rootPet=0, tile=1, rc=rc)
      if (localpet == 0) then
        do j=1,j_input; do i=1,i_input
          smc_col(1:4)=in_3d(i,j,:); smc_col(0)=smc_col(1); smc_col(5)=smc_col(4)
+         
+         ! First, Interpolate
          do lwant=1,lsoil_target
            target_mid = merge(0.5*soil_depth_target(1), 0.5*(soil_depth_target(lwant)+soil_depth_target(lwant-1)), lwant==1)
            do lhave=0,4
@@ -2229,10 +2243,35 @@
              endif
            enddo
          enddo
+
+! Second, Apply Physics Redistribution Strategy
+         styp = nint(in_styp(i,j))
+         if (styp <= 0 .or. styp > 16) styp = 16
+         wilting_point  = real(wltsmc_target(styp), esmf_kind_r8) 
+         field_capacity = real(refsmc_target(styp), esmf_kind_r8)
+         porosity       = real(maxsmc_target(styp), esmf_kind_r8)
+
+         level_water = level_thick * out_3d(i,j,:)
+
+         do k = 1, lsoil_target - 1
+            if (level_water(k) > level_thick(k) * field_capacity) then
+               level_water(k+1) = level_water(k+1) + (level_water(k) - level_thick(k) * field_capacity)
+               level_water(k)   = level_thick(k) * field_capacity
+            elseif (level_water(k) < level_thick(k) * wilting_point) then
+               level_water(k+1) = level_water(k+1) - (level_thick(k) * wilting_point - level_water(k))
+               level_water(k)   = level_thick(k) * wilting_point
+            end if
+         end do
+
+         if (level_water(lsoil_target) > level_thick(lsoil_target) * porosity) then
+            level_water(lsoil_target) = level_thick(lsoil_target) * porosity
+         end if
+
+         out_3d(i,j,1:lsoil_target) = level_water / level_thick
        enddo; enddo
      endif
      call ESMF_FieldDestroy(soilm_tot_input_grid, rc=rc)
-     soilm_tot_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc) 
+     soilm_tot_input_grid = ESMF_FieldCreate(input_grid, typekind=ESMF_TYPEKIND_R8, ungriddedUBound=(/lsoil_target/), rc=rc)
      call ESMF_FieldScatter(soilm_tot_input_grid, out_3d, rootpet=0, rc=rc)
 
 ! --- STEP C: LIQUID MOISTURE (PHYSICS DERIVED) ---
@@ -2264,6 +2303,7 @@
 
      if (localpet == 0) deallocate(in_3d, out_3d, in_skint, in_tg3, in_styp)
    endif
+ 
  end subroutine adjust_soil_levels
 !> Set roughness length at points with some sea ice to 1 cm.
 !! Set flag value at points with some or all open water.
