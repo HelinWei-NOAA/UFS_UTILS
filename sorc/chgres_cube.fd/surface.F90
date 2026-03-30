@@ -2174,13 +2174,13 @@
    if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
     call error_handler("IN FieldScatter", rc)   
  
- elseif (lsoil_input /= lsoil_target) then
-  rc = -1
-  write(lsoil_input_ch, '(i2)') lsoil_input
-  write(lsoil_target_ch, '(i2)') lsoil_target
-  msg="NUMBER OF SOIL LEVELS IN INPUT " // lsoil_input_ch // " AND OUTPUT " &
-      // lsoil_target_ch // " MUST EITHER BE EQUAL OR 9 AND 4 RESPECTIVELY."
-  call error_handler(msg, rc)
+!elseif (lsoil_input /= lsoil_target) then
+! rc = -1
+! write(lsoil_input_ch, '(i2)') lsoil_input
+! write(lsoil_target_ch, '(i2)') lsoil_target
+! msg="NUMBER OF SOIL LEVELS IN INPUT " // lsoil_input_ch // " AND OUTPUT " &
+!     // lsoil_target_ch // " MUST EITHER BE EQUAL OR 9 AND 4 RESPECTIVELY."
+! call error_handler(msg, rc)
  endif
 
  if (lsoil_input == 4 ) then
@@ -2939,6 +2939,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID Q2M."
  q2m_target_grid = ESMF_FieldCreate(target_grid, &
@@ -2955,6 +2956,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID TPRCP."
  tprcp_target_grid = ESMF_FieldCreate(target_grid, &
@@ -2971,6 +2973,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID F10M."
  f10m_target_grid = ESMF_FieldCreate(target_grid, &
@@ -2987,6 +2990,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID FFMM."
  ffmm_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3003,6 +3007,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID USTAR."
  ustar_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3019,6 +3024,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SNOW LIQ EQUIV."
  snow_liq_equiv_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3035,6 +3041,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SNOW LIQ EQUIV AT SEA ICE."
  snow_liq_equiv_at_ice_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3051,6 +3058,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SNOW DEPTH."
  snow_depth_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3067,6 +3075,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SNOW DEPTH AT SEA ICE."
  snow_depth_at_ice_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3083,6 +3092,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SEA ICE FRACTION."
  seaice_fract_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3099,6 +3109,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SEA ICE DEPTH."
  seaice_depth_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3115,6 +3126,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID sst."
  sst_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3131,6 +3143,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SEA ICE SKIN TEMP."
  seaice_skin_temp_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3147,6 +3160,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SRFLAG."
  srflag_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3163,6 +3177,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SKIN TEMPERATURE."
  skin_temp_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3179,6 +3194,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID CANOPY MOISTURE CONTENT."
  canopy_mc_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3195,6 +3211,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
  
  print*,"- CALL FieldCreate FOR TARGET GRID LEAF AREA INDEX."
  lai_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3211,6 +3228,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID Z0_ICE."
  z0_ice_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3227,6 +3245,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID Z0_WATER."
  z0_water_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3243,6 +3262,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR INTERPOLATED TARGET GRID TERRAIN."
  terrain_from_input_grid = ESMF_FieldCreate(target_grid, &
@@ -3259,6 +3279,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR INTERPOLATED TARGET GRID SOIL TYPE."
  soil_type_from_input_grid = ESMF_FieldCreate(target_grid, &
@@ -3275,6 +3296,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr = init_val
+ nullify(target_ptr)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SEA ICE COLUMN TEMPERATURE."
  ice_temp_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3293,6 +3315,7 @@
     call error_handler("IN FieldGet", rc)
 
  target_ptr_3d = init_val
+ nullify(target_ptr_3d)
 
  print*,"- CALL FieldCreate FOR TARGET GRID SOIL TEMPERATURE."
  soil_temp_target_grid = ESMF_FieldCreate(target_grid, &
