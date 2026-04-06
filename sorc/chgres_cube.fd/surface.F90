@@ -171,6 +171,11 @@
  ! CRITICAL: This must match lsoil_input so horizontal interp works.
  call create_surface_esmf_fields(num_layers=lsoil_input)
  if (convert_nst) call create_nst_esmf_fields
+ !-----------------------------------------------------------------------
+! Adjust soil levels of input grid !! not implemented yet
+!-----------------------------------------------------------------------
+
+ call adjust_soil_levels(localpet)
 
  ! 3. Horizontal Interpolation (Raw input -> Target grid footprint)
  call interp(localpet)
