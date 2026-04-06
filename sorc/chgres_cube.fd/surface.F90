@@ -126,11 +126,13 @@
                                        nsoill_out, soil_depth_target, &
                                        lsoil_input, soil_depth_input, &
                                        maxsmc_target, satpsi_target, bb_target, &
-                                       wltsmc_target, refsmc_target
+                                       wltsmc_target, refsmc_target, &
+                                       tg3_from_soil
 
  use static_data, only               : get_static_fields, &
                                        cleanup_static_fields, &
-                                       soil_type_target_grid
+                                       soil_type_target_grid, &
+                                       substrate_temp_target_grid
 
  use model_grid, only                : i_target, j_target
 
@@ -150,6 +152,8 @@
  real(esmf_kind_r8), pointer        :: smc_proc_ptr(:,:,:)
  real(esmf_kind_r8), pointer        :: slc_proc_ptr(:,:,:)
  real(esmf_kind_r8), pointer        :: styp_tgt_ptr(:,:)
+ real(esmf_kind_r8), pointer        :: skin_tgt_ptr(:,:)      ! Pointer to surface temp data
+ real(esmf_kind_r8), pointer        :: sttg_tgt_ptr(:,:)      ! Pointer to tg3 (bottom) data
 
  ! Final output pointers
  real(esmf_kind_r8), pointer        :: stc_final_ptr(:,:,:)
@@ -192,6 +196,8 @@
      call ESMF_FieldGet(soil_temp_target_grid, farrayPtr=stc_proc_ptr, rc=rc)
      call ESMF_FieldGet(soilm_tot_target_grid, farrayPtr=smc_proc_ptr, rc=rc)
      call ESMF_FieldGet(soil_type_target_grid, farrayPtr=styp_tgt_ptr, rc=rc)
+     call ESMF_FieldGet(skin_temp_target_grid, farrayPtr=skin_tgt_ptr, rc=rc)
+     call ESMF_FieldGet(substrate_temp_target_grid, farrayPtr=sttg_tgt_ptr, rc=rc)
 
      allocate(stc_final_ptr(i_target, j_target, nsoill_out))
      allocate(smc_final_ptr(i_target, j_target, nsoill_out))
@@ -201,9 +207,11 @@
 
      call interp_soil_vertical(im_total, lsoil_input, nsoill_out, &
                                soil_depth_input, soil_depth_target, &
-                               smc_proc_ptr, stc_proc_ptr, nint(styp_tgt_ptr), &
+                               smc_proc_ptr, stc_proc_ptr, &
+                               skin_tgt_ptr, sttg_tgt_ptr, &  ! NEW ARGUMENTS HERE
+                               nint(styp_tgt_ptr), &
                                maxsmc_target, satpsi_target, bb_target, &
-                               wltsmc_target, refsmc_target, & 
+                               wltsmc_target, refsmc_target, &
                                smc_final_ptr, stc_final_ptr, slc_final_ptr)
 
      ! 7. Re-create ESMF Fields at the FINAL resolution (nsoill_out)
