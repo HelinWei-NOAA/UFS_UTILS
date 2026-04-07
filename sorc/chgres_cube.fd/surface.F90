@@ -114,7 +114,7 @@
 
  subroutine surface_driver(localpet)
 
- use sfc_input_data, only            : read_input_sfc_data, cleanup_input_sfc_data, &
+ use sfc_input_data, only            : cleanup_input_sfc_data, read_input_sfc_data,&
                                        soilm_tot_input_grid, soil_temp_input_grid, &
                                        soil_type_input_grid, soilm_liq_input_grid, &
                                        i_input, j_input
@@ -160,35 +160,90 @@
  real(esmf_kind_r8), pointer        :: smc_final_ptr(:,:,:)
  real(esmf_kind_r8), pointer        :: slc_final_ptr(:,:,:)
 
- ! 1. Initialization and Input Reading
+
+!-----------------------------------------------------------------------
+! Compute soil-based parameters.
+!-----------------------------------------------------------------------
+
  call calc_soil_params_driver(localpet)
+
+!-----------------------------------------------------------------------
+! Get static data (like vegetation type) on the target grid.
+!-----------------------------------------------------------------------
+
  call get_static_fields(localpet)
+
+!-----------------------------------------------------------------------
+! Read surface data on input grid.
+!-----------------------------------------------------------------------
+
  call read_input_sfc_data(localpet)
+
+!-----------------------------------------------------------------------
+! Read nst data on input grid.
+!-----------------------------------------------------------------------
 
  if (convert_nst) call read_input_nst_data(localpet)
 
- ! 2. Create Target ESMF Fields at INPUT resolution.
- ! CRITICAL: This must match lsoil_input so horizontal interp works.
+!-----------------------------------------------------------------------
+! Create surface field objects for target grid.
+!-----------------------------------------------------------------------
+
  call create_surface_esmf_fields(num_layers=lsoil_input)
+
+!-----------------------------------------------------------------------
+! Create nst field objects for target grid.
+!-----------------------------------------------------------------------
+
  if (convert_nst) call create_nst_esmf_fields
- !-----------------------------------------------------------------------
+ 
+!-----------------------------------------------------------------------
 ! Adjust soil levels of input grid !! not implemented yet
 !-----------------------------------------------------------------------
 
  call adjust_soil_levels(localpet)
 
- ! 3. Horizontal Interpolation (Raw input -> Target grid footprint)
- call interp(localpet)
+!-----------------------------------------------------------------------
+! Horizontally interpolate fields.
+!-----------------------------------------------------------------------
 
- ! 4. Surface Physics and Adjustments
- ! These are performed on the horizontal target grid at input vertical resolution.
+ call interp(localpet)
+ 
+!---------------------------------------------------------------------------------------------
+! Adjust soil/landice column temperatures for any change in elevation between  the
+! input and target grids.
+!---------------------------------------------------------------------------------------------
+
  call adjust_soilt_for_terrain
+ 
+!---------------------------------------------------------------------------------------------
+! Rescale soil moisture for changes in soil type between the input and target grids.
+!---------------------------------------------------------------------------------------------
+
  call rescale_soil_moisture
+ 
+!---------------------------------------------------------------------------------------------
+! Compute liquid portion of total soil moisture.
+!---------------------------------------------------------------------------------------------
+
  call calc_liq_soil_moisture
+
+!---------------------------------------------------------------------------------------------
+! Set z0 at water and sea ice.
+!---------------------------------------------------------------------------------------------
+
  call roughness
+
+!------------------------------------------------------------------------------------------------
+! Perform some final qc checks.
+!---------------------------------------------------------------------------------------------
+
  call qc_check
 
- ! 5. Condition for Vertical Interpolation
+!------------------------------------------------------------------------------------------------
+! Vertical Interpolation 
+!---------------------------------------------------------------------------------------------
+
  if (lsoil_input == nsoill_out .and. &
      all(abs(soil_depth_input - soil_depth_target) < 1.0e-6_esmf_kind_r8)) then
 
@@ -239,17 +294,40 @@
      deallocate(stc_final_ptr, smc_final_ptr, slc_final_ptr)
  endif
 
+!---------------------------------------------------------------------------------------------
+! Set flag values at land for nst fields.
+!---------------------------------------------------------------------------------------------
+
  if (convert_nst) call nst_land_fill
 
- ! 8. Cleanup and Output
+!---------------------------------------------------------------------------------------------
+! Free up memory.
+!---------------------------------------------------------------------------------------------
+
  call cleanup_input_sfc_data
+
  if (convert_nst) call cleanup_input_nst_data
 
+!---------------------------------------------------------------------------------------------
+! Update land mask for ice.
+!---------------------------------------------------------------------------------------------
+ 
  call update_landmask
+
+!---------------------------------------------------------------------------------------------
+! Write data to file.
+!---------------------------------------------------------------------------------------------
+
  call write_fv3_sfc_data_netcdf(localpet)
 
+!---------------------------------------------------------------------------------------------
+! Free up memory.
+!---------------------------------------------------------------------------------------------
+
  if (convert_nst) call cleanup_target_nst_data
+
  call cleanup_all_target_sfc_data
+
  call cleanup_static_fields
 
  end subroutine surface_driver
@@ -2152,12 +2230,7 @@
     call error_handler("IN FieldScatter", rc)   
  
  elseif (lsoil_input /= lsoil_target) then
-  rc = -1
-  write(lsoil_input_ch, '(i2)') lsoil_input
-  write(lsoil_target_ch, '(i2)') lsoil_target
-  msg="NUMBER OF SOIL LEVELS IN INPUT " // lsoil_input_ch // " AND OUTPUT " &
-      // lsoil_target_ch // " MUST EITHER BE EQUAL OR 9 AND 4 RESPECTIVELY."
-  call error_handler(msg, rc)
+  if (localpet == 0) print*,"- SOIL Layer Vertical Interpolation"
  endif
  
  end subroutine adjust_soil_levels
