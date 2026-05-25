@@ -1,5 +1,8 @@
 module utilities
 
+ use esmf
+ implicit none
+
 contains
 !> @file
 !! @brief Contains utility routines.
@@ -9,6 +12,181 @@ contains
 !!
 !! @param[in] string  error message
 !! @param[in] rc      error status code
+
+subroutine interp_soil_vertical(im, lsoil_input, lsoil_lsm, &
+                                 soil_depth_input, soil_depth_output, &
+                                 soil_moisture_input, soil_temperature_input, &
+                                 skin_temperature_input, tg3_input, & ! NEW INPUTS
+                                 soil_type, &
+                                 maxsmc_target, satpsi_target, &
+                                 bb_target, wltsmc_target, refsmc_target, &
+                                 soil_moisture_output, soil_temperature_output, &
+                                 soil_liquid_output)
+
+    use esmf, only : esmf_kind_r8
+    implicit none
+
+    ! Arguments
+    integer, intent(in) :: im, lsoil_input, lsoil_lsm
+    real (esmf_kind_r8), intent(in) :: soil_depth_input(lsoil_input)
+    real (esmf_kind_r8), intent(in) :: soil_depth_output(lsoil_lsm)
+    real (esmf_kind_r8), intent(in) :: soil_moisture_input(im,lsoil_input)
+    real (esmf_kind_r8), intent(in) :: soil_temperature_input(im,lsoil_input)
+    real (esmf_kind_r8), intent(in) :: skin_temperature_input(im)  ! NEW: Skin Temp
+    real (esmf_kind_r8), intent(in) :: tg3_input(im)               ! NEW: Bottom Temp
+    integer,             intent(in) :: soil_type(im)
+
+    ! Soil Parameter Tables (1D arrays of size 16) from program_setup
+    real, intent(in) :: maxsmc_target(:), satpsi_target(:), bb_target(:)
+    real, intent(in) :: wltsmc_target(:), refsmc_target(:)
+
+    ! Outputs
+    real (esmf_kind_r8), intent(inout) :: soil_moisture_output(im,lsoil_lsm)
+    real (esmf_kind_r8), intent(inout) :: soil_temperature_output(im,lsoil_lsm)
+    real (esmf_kind_r8), intent(inout) :: soil_liquid_output(im,lsoil_lsm)
+
+    ! Local variables
+    ! We use 0:lsoil_input+1 to store: [Surface, Original_Inputs, Deep_Bottom]
+    real (esmf_kind_r8) :: interp_levels(0:lsoil_input+1)
+    real (esmf_kind_r8) :: soil_moisture_interp(im,0:lsoil_input+1)
+    real (esmf_kind_r8) :: soil_temperature_interp(im,0:lsoil_input+1)
+    
+    real (esmf_kind_r8) :: level_thickness_output(lsoil_lsm)
+    real (esmf_kind_r8) :: level_water(lsoil_lsm)
+    real (esmf_kind_r8) :: target_midpoint, porosity, bexp, psisat, soil_matric_potential
+    real (esmf_kind_r8) :: supercool_water, field_capacity, wilting_point
+
+    integer :: iloc, ilev, lhave, lwant, styp
+    real (esmf_kind_r8), parameter :: latent_heat_fusion = 0.3336e06
+    real (esmf_kind_r8), parameter :: temperature_freezing = 273.16
+    real (esmf_kind_r8), parameter :: gravity = 9.80616
+
+    ! -------------------------------------------------------------------------
+    ! 1. SETUP INTERP LEVELS (Source Depths)
+    ! -------------------------------------------------------------------------
+    ! The levels now define exactly WHERE our source data points reside.
+    interp_levels(0) = 0.0_esmf_kind_r8                          ! Surface
+    interp_levels(1:lsoil_input) = soil_depth_input(1:lsoil_input) ! Original levels
+    interp_levels(lsoil_input+1) = soil_depth_output(lsoil_lsm)    ! Deep Bottom
+
+    ! -------------------------------------------------------------------------
+    ! 2. BOUNDARY CREATION (Sandwiching core data between skin and tg3)
+    ! -------------------------------------------------------------------------
+    ! We populate the source arrays (spatial loop)
+    do iloc = 1, im
+        styp = soil_type(iloc)
+        if (styp <= 0 .or. styp > 16) styp = 16 ! Default to Water/Silt if invalid
+        porosity = real(maxsmc_target(styp), esmf_kind_r8)
+
+        ! --- Core Data Copy ---
+        soil_temperature_interp(iloc, 1:lsoil_input) = soil_temperature_input(iloc, 1:lsoil_input)
+        soil_moisture_interp(iloc, 1:lsoil_input)    = soil_moisture_input(iloc, 1:lsoil_input)
+
+        ! --- Surface Boundary (Index 0) ---
+        ! A. Temperature: USE SKIN TEMPERATURE
+        soil_temperature_interp(iloc, 0) = skin_temperature_input(iloc)
+
+        ! B. Moisture: Linear surface extrapolation (from original levels 1 and 2)
+        soil_moisture_interp(iloc, 0) = soil_moisture_interp(iloc, 1) + &
+            (interp_levels(0) - interp_levels(1)) * &
+            (soil_moisture_interp(iloc, 1) - soil_moisture_interp(iloc, 2)) / &
+            (interp_levels(1) - interp_levels(2))
+
+        ! Clamp moisture at surface
+        soil_moisture_interp(iloc, 0) = max(0.01_esmf_kind_r8, min(soil_moisture_interp(iloc, 0), porosity))
+
+        ! --- Deep Bottom Boundary (Index lsoil_input+1) ---
+        ! A. Temperature: USE TG3
+        soil_temperature_interp(iloc, lsoil_input+1) = tg3_input(iloc)
+
+        ! B. Moisture: Stable deep bottom (Constant Fill)
+        soil_moisture_interp(iloc, lsoil_input+1) = soil_moisture_interp(iloc, lsoil_input)
+    end do  
+
+    ! -------------------------------------------------------------------------
+    ! 3. INTERPOLATION TO TARGET MIDPOINTS (Now uses expanded source)
+    ! -------------------------------------------------------------------------
+    ! The source arrays are now properly formed sandwiching the inputs.
+    ! Interpolation iterates through: 0 (Surface), 1..lsoil_input (Core), lsoil_input+1 (Bottom)
+    
+    do lwant = 1, lsoil_lsm
+        target_midpoint = merge(0.5 * soil_depth_output(1), &
+                                0.5 * (soil_depth_output(lwant) + soil_depth_output(lwant-1)), &
+                                lwant == 1)
+        do lhave = 0, lsoil_input
+            if (target_midpoint >= interp_levels(lhave) .and. target_midpoint <= interp_levels(lhave+1)) then
+                do iloc = 1, im
+                    soil_moisture_output(iloc,lwant) = soil_moisture_interp(iloc,lhave+1) + &
+                        (target_midpoint - interp_levels(lhave+1)) * &
+                        (soil_moisture_interp(iloc,lhave) - soil_moisture_interp(iloc,lhave+1)) / &
+                        (interp_levels(lhave) - interp_levels(lhave+1))
+                    soil_temperature_output(iloc,lwant) = soil_temperature_interp(iloc,lhave+1) + &
+                        (target_midpoint - interp_levels(lhave+1)) * &
+                        (soil_temperature_interp(iloc,lhave) - soil_temperature_interp(iloc,lhave+1)) / &
+                        (interp_levels(lhave) - interp_levels(lhave+1))
+                end do
+                exit
+            end if
+        end do
+    end do
+
+    ! -------------------------------------------------------------------------
+    ! 4. THICKNESS AND REDISTRIBUTION (As provided)
+    ! -------------------------------------------------------------------------
+    level_thickness_output(1) = soil_depth_output(1)
+    do ilev = 2, lsoil_lsm
+        level_thickness_output(ilev) = soil_depth_output(ilev) - soil_depth_output(ilev-1)
+    end do
+
+    do iloc = 1, im
+        styp = soil_type(iloc)
+        if (styp <= 0 .or. styp > 16) styp = 16
+        wilting_point  = real(wltsmc_target(styp), esmf_kind_r8)
+        field_capacity = real(refsmc_target(styp), esmf_kind_r8)
+        porosity       = real(maxsmc_target(styp), esmf_kind_r8)
+
+        level_water = level_thickness_output * soil_moisture_output(iloc,:)
+        
+        do ilev = 1, lsoil_lsm-1
+            if(level_water(ilev) > level_thickness_output(ilev)*field_capacity) then
+                level_water(ilev+1) = level_water(ilev+1) + (level_water(ilev) - level_thickness_output(ilev)*field_capacity)
+                level_water(ilev)   = level_thickness_output(ilev)*field_capacity
+            elseif(level_water(ilev) < level_thickness_output(ilev)*wilting_point) then
+                level_water(ilev+1) = level_water(ilev+1) - (level_thickness_output(ilev)*wilting_point - level_water(ilev))
+                level_water(ilev)   = level_thickness_output(ilev)*wilting_point
+            end if
+        end do
+
+        if(level_water(lsoil_lsm) > level_thickness_output(lsoil_lsm)*porosity) then
+            level_water(lsoil_lsm) = level_thickness_output(lsoil_lsm)*porosity
+        end if
+
+        soil_moisture_output(iloc,:) = level_water / level_thickness_output
+    end do
+
+    ! -------------------------------------------------------------------------
+    ! 5. LIQUID WATER FRACTION (As provided)
+    ! -------------------------------------------------------------------------
+    do iloc = 1, im
+        styp = soil_type(iloc)
+        if (styp <= 0 .or. styp > 16) styp = 16
+        porosity = real(maxsmc_target(styp), esmf_kind_r8)
+        bexp     = real(bb_target(styp), esmf_kind_r8)
+        psisat   = real(satpsi_target(styp), esmf_kind_r8)
+
+        do ilev = 1, lsoil_lsm
+            if(soil_temperature_output(iloc,ilev) >= temperature_freezing) then
+                soil_liquid_output(iloc,ilev) = soil_moisture_output(iloc,ilev)
+            else
+                soil_matric_potential = latent_heat_fusion * (temperature_freezing - soil_temperature_output(iloc,ilev)) / &
+                                        (gravity * soil_temperature_output(iloc,ilev))
+                supercool_water = porosity * (max(1.e-8, soil_matric_potential/psisat))**(-1./bexp)
+                soil_liquid_output(iloc,ilev) = min(supercool_water, soil_moisture_output(iloc,ilev))
+            end if
+        end do
+    end do
+
+ end subroutine interp_soil_vertical
  subroutine error_handler(string, rc)
 
  use mpi_f08

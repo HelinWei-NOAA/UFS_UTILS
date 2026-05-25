@@ -32,6 +32,10 @@
 #                manager for assistance.
 # LEVS         - Number of hybrid levels plus 1.  To
 #                run with 64 levels, set LEVS to 65.
+# lsoil_input  - Number of input soil layers (usually 4).
+# soil_depth_input  - Vertical depths (m) of input soil layers.
+# nsoill_out   - Number of target soil layers (e.g., 10).
+# soil_depth_target - Vertical depths (m) of target soil layers.
 # CRES_HIRES   - Resolution of the hires component of
 #                your experiment.
 # CRES_ENKF    - Resolution of the enkf component of the
@@ -51,8 +55,8 @@
 #
 #-----------------------------------------------------------
 
-EXTRACT_DIR=/lfs/h2/emc/stmp/$USER/gdas.init/input
-EXTRACT_DATA=no
+EXTRACT_DIR=/scratch3/NCEPDEV/stmp/Helin.Wei/gdas.init/input
+EXTRACT_DATA=yes
 
 RUN_CHGRES=yes
 
@@ -65,14 +69,24 @@ use_v16retro=no
 
 LEVS=128
 
+# --- ADDED FOR 10-LAYER SOIL UPDATE ---
+lsoil_input=4
+soil_depth_input="0.1,0.4,1.0,2.0"
+
+nsoill_out=10
+soil_depth_target="0.05,0.15,0.25,0.35,0.65,1.0,1.5,2.5,3.5,5.0"
+#soil_depth_target="0.1,0.4,1.0,2.0"
+# --------------------------------------
+
 CDUMP=gfs
 
 CRES_HIRES=C192
 CRES_ENKF=C96
 
+
 UFS_DIR=$PWD/../..
 
-OUTDIR=/lfs/h2/emc/stmp/$USER/gdas.init/output
+OUTDIR=/scratch3/NCEPDEV/stmp/Helin.Wei/gdas.init/output_10lu
 #---------------------------------------------------------
 # Dont touch anything below here.
 #---------------------------------------------------------
@@ -127,3 +141,4 @@ fi
 
 export EXTRACT_DIR yy mm dd hh UFS_DIR OUTDIR CRES_HIRES CRES_ENKF
 export LEVS gfs_ver EXEC_DIR GDAS_INIT_DIR use_v16retro
+export lsoil_input soil_depth_input nsoill_out soil_depth_target

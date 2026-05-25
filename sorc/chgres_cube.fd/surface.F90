@@ -48,7 +48,7 @@
 
  use write_data, only : write_fv3_sfc_data_netcdf
 
- use utilities, only  : error_handler
+ use utilities, only  : error_handler, interp_soil_vertical
 
  implicit none
 
@@ -111,27 +111,55 @@
 !! @param[in] localpet  ESMF local persistent execution thread
 !!
 !! @author George Gayno NCEP/EMC
+
  subroutine surface_driver(localpet)
 
- use sfc_input_data, only            : cleanup_input_sfc_data, &
-                                       read_input_sfc_data
+ use sfc_input_data, only            : cleanup_input_sfc_data, read_input_sfc_data,&
+                                       soilm_tot_input_grid, soil_temp_input_grid, &
+                                       soil_type_input_grid, soilm_liq_input_grid, &
+                                       i_input, j_input
 
  use nst_input_data, only            : cleanup_input_nst_data, &
                                        read_input_nst_data
 
- use program_setup, only             : calc_soil_params_driver, &
-                                       convert_nst
-                                  
- use static_data, only               :  get_static_fields, &
-                                       cleanup_static_fields
+ use program_setup, only             : calc_soil_params_driver, convert_nst, &
+                                       nsoill_out, soil_depth_target, &
+                                       lsoil_input, soil_depth_input, &
+                                       maxsmc_target, satpsi_target, bb_target, &
+                                       wltsmc_target, refsmc_target, &
+                                       tg3_from_soil
 
- use surface_target_data, only       : cleanup_target_nst_data
+ use static_data, only               : get_static_fields, &
+                                       cleanup_static_fields, &
+                                       soil_type_target_grid, &
+                                       substrate_temp_target_grid
 
- use utilities, only                 : error_handler
+ use model_grid, only                : i_target, j_target
+
+ use surface_target_data, only       : cleanup_target_nst_data, &
+                                       soil_temp_target_grid, &
+                                       soilm_tot_target_grid, &
+                                       soilm_liq_target_grid
 
  implicit none
 
  integer, intent(in)                :: localpet
+ integer                            :: im_total
+ integer                            :: rc
+
+ ! Processing pointers
+ real(esmf_kind_r8), pointer        :: stc_proc_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: smc_proc_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: slc_proc_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: styp_tgt_ptr(:,:)
+ real(esmf_kind_r8), pointer        :: skin_tgt_ptr(:,:)      ! Pointer to surface temp data
+ real(esmf_kind_r8), pointer        :: sttg_tgt_ptr(:,:)      ! Pointer to tg3 (bottom) data
+
+ ! Final output pointers
+ real(esmf_kind_r8), pointer        :: stc_final_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: smc_final_ptr(:,:,:)
+ real(esmf_kind_r8), pointer        :: slc_final_ptr(:,:,:)
+
 
 !-----------------------------------------------------------------------
 ! Compute soil-based parameters.
@@ -161,7 +189,7 @@
 ! Create surface field objects for target grid.
 !-----------------------------------------------------------------------
 
- call create_surface_esmf_fields
+ call create_surface_esmf_fields(num_layers=lsoil_input)
 
 !-----------------------------------------------------------------------
 ! Create nst field objects for target grid.
@@ -206,11 +234,65 @@
 
  call roughness
 
-!---------------------------------------------------------------------------------------------
+!------------------------------------------------------------------------------------------------
 ! Perform some final qc checks.
 !---------------------------------------------------------------------------------------------
 
  call qc_check
+
+!------------------------------------------------------------------------------------------------
+! Vertical Interpolation 
+!---------------------------------------------------------------------------------------------
+
+ if (lsoil_input == nsoill_out .and. &
+     all(abs(soil_depth_input - soil_depth_target) < 1.0e-6_esmf_kind_r8)) then
+
+     if (localpet == 0) print*,"- SOIL CONFIG IDENTICAL. SKIPPING VERTICAL INTERP FOR BIT-BIT."
+
+ else
+     ! 6. Perform Vertical Interpolation (Config differs)
+     if (localpet == 0) print*,"- SOIL CONFIG DIFFERS. PERFORMING VERTICAL INTERPOLATION."
+
+     call ESMF_FieldGet(soil_temp_target_grid, farrayPtr=stc_proc_ptr, rc=rc)
+     call ESMF_FieldGet(soilm_tot_target_grid, farrayPtr=smc_proc_ptr, rc=rc)
+     call ESMF_FieldGet(soil_type_target_grid, farrayPtr=styp_tgt_ptr, rc=rc)
+     call ESMF_FieldGet(skin_temp_target_grid, farrayPtr=skin_tgt_ptr, rc=rc)
+     call ESMF_FieldGet(substrate_temp_target_grid, farrayPtr=sttg_tgt_ptr, rc=rc)
+
+     allocate(stc_final_ptr(i_target, j_target, nsoill_out))
+     allocate(smc_final_ptr(i_target, j_target, nsoill_out))
+     allocate(slc_final_ptr(i_target, j_target, nsoill_out))
+
+     im_total = i_target * j_target
+
+     call interp_soil_vertical(im_total, lsoil_input, nsoill_out, &
+                               soil_depth_input, soil_depth_target, &
+                               smc_proc_ptr, stc_proc_ptr, &
+                               skin_tgt_ptr, sttg_tgt_ptr, &  ! NEW ARGUMENTS HERE
+                               nint(styp_tgt_ptr), &
+                               maxsmc_target, satpsi_target, bb_target, &
+                               wltsmc_target, refsmc_target, &
+                               smc_final_ptr, stc_final_ptr, slc_final_ptr)
+
+     ! 7. Re-create ESMF Fields at the FINAL resolution (nsoill_out)
+     nullify(stc_proc_ptr, smc_proc_ptr, slc_proc_ptr)
+     call ESMF_FieldDestroy(soil_temp_target_grid, rc=rc)
+     call ESMF_FieldDestroy(soilm_tot_target_grid, rc=rc)
+     call ESMF_FieldDestroy(soilm_liq_target_grid, rc=rc)
+
+     call create_surface_esmf_fields(num_layers=nsoill_out)
+
+     ! Fill the recreated fields with the interpolated data
+     call ESMF_FieldGet(soil_temp_target_grid, farrayPtr=stc_proc_ptr, rc=rc)
+     call ESMF_FieldGet(soilm_tot_target_grid, farrayPtr=smc_proc_ptr, rc=rc)
+     call ESMF_FieldGet(soilm_liq_target_grid, farrayPtr=slc_proc_ptr, rc=rc)
+
+     stc_proc_ptr = stc_final_ptr
+     smc_proc_ptr = smc_final_ptr
+     slc_proc_ptr = slc_final_ptr
+
+     deallocate(stc_final_ptr, smc_final_ptr, slc_final_ptr)
+ endif
 
 !---------------------------------------------------------------------------------------------
 ! Set flag values at land for nst fields.
@@ -247,8 +329,6 @@
  call cleanup_all_target_sfc_data
 
  call cleanup_static_fields
-
- return
 
  end subroutine surface_driver
 
@@ -324,7 +404,8 @@
                                        vgfrc_from_climo, &
                                        minmax_vgfrc_from_climo, &
                                        lai_from_climo, &
-                                       tg3_from_soil
+                                       tg3_from_soil, &
+                                       lsoil_input
                                        
  use static_data, only               : veg_type_target_grid, &
                                        soil_type_target_grid, &
@@ -387,7 +468,10 @@
  type(esmf_fieldbundle)             :: bundle_nolandice_target, bundle_nolandice_input
  
  logical, allocatable               :: dozero(:)
+ integer                            :: nlyr
 
+! Set the current working dimension to the input layer count
+ nlyr = lsoil_input
 !-----------------------------------------------------------------------
 ! Interpolate fieids that do not require 'masked' interpolation.
 !-----------------------------------------------------------------------
@@ -513,7 +597,7 @@
 
   if (localpet == 0) then
    allocate(data_one_tile(i_target,j_target))
-   allocate(data_one_tile_3d(i_target,j_target,lsoil_target))
+   allocate(data_one_tile_3d(i_target,j_target,nlyr))
    allocate(mask_target_one_tile(i_target,j_target))
  else
    allocate(data_one_tile(0,0))
@@ -1459,7 +1543,7 @@
       call error_handler("IN FieldGather", rc)
 
    if (localpet == 0) then
-     do j = 1, lsoil_target
+     do j = 1, nlyr
        data_one_tile = data_one_tile_3d(:,:,j)
        call search(data_one_tile, mask_target_one_tile, i_target, j_target, tile, 86)
        data_one_tile_3d(:,:,j) = data_one_tile
@@ -1473,7 +1557,7 @@
       
    if (tg3_from_soil) then
      print*,"- CALL FieldScatter FOR TARGET GRID SUBSTRATE TEMPERATURE, TILE: ", tile
-     call ESMF_FieldScatter(substrate_temp_target_grid, data_one_tile_3d(:,:,lsoil_target), rootPet=0, tile=tile, rc=rc)
+     call ESMF_FieldScatter(substrate_temp_target_grid, data_one_tile_3d(:,:,lsoil_input), rootPet=0, tile=tile, rc=rc)
      if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
         call error_handler("IN FieldScatter", rc)
    endif
@@ -2146,12 +2230,7 @@
     call error_handler("IN FieldScatter", rc)   
  
  elseif (lsoil_input /= lsoil_target) then
-  rc = -1
-  write(lsoil_input_ch, '(i2)') lsoil_input
-  write(lsoil_target_ch, '(i2)') lsoil_target
-  msg="NUMBER OF SOIL LEVELS IN INPUT " // lsoil_input_ch // " AND OUTPUT " &
-      // lsoil_target_ch // " MUST EITHER BE EQUAL OR 9 AND 4 RESPECTIVELY."
-  call error_handler(msg, rc)
+  if (localpet == 0) print*,"- SOIL Layer Vertical Interpolation"
  endif
  
  end subroutine adjust_soil_levels
@@ -2764,16 +2843,19 @@
 !> Create ESMF fields for the target grid surface variables
 !!
 !! @author George Gayno NOAA/EMC
- subroutine create_surface_esmf_fields
+ subroutine create_surface_esmf_fields(num_layers)
 
  use model_grid, only         : target_grid, lsoil_target
 
  implicit none
 
- integer                        :: rc
+ integer                        :: rc, nlyr
+ integer, intent(in), optional  :: num_layers
 
  real(esmf_kind_r8), pointer    :: target_ptr(:,:), target_ptr_3d(:,:,:)
  real                           :: init_val = -999.9
+
+ if (present(num_layers)) then ; nlyr = num_layers ; else ; nlyr = lsoil_target ; endif
 
  print*,"- CALL FieldCreate FOR TARGET GRID T2M."
  t2m_target_grid = ESMF_FieldCreate(target_grid, &
@@ -3133,7 +3215,7 @@
                                    staggerloc=ESMF_STAGGERLOC_CENTER, &
                                    name="ice_temp_target_grid", &
                                    ungriddedLBound=(/1/), &
-                                   ungriddedUBound=(/lsoil_target/), rc=rc)
+                                   ungriddedUBound=(/nlyr/), rc=rc)
  if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
     call error_handler("IN FieldCreate", rc)
 
@@ -3151,7 +3233,7 @@
                                    staggerloc=ESMF_STAGGERLOC_CENTER, &
                                    name="soil_temp_target_grid", &
                                    ungriddedLBound=(/1/), &
-                                   ungriddedUBound=(/lsoil_target/), rc=rc)
+                                   ungriddedUBound=(/nlyr/), rc=rc)
  if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
     call error_handler("IN FieldCreate", rc)
 
@@ -3169,7 +3251,7 @@
                                    staggerloc=ESMF_STAGGERLOC_CENTER, &
                                    name="soilm_tot_target_grid", &
                                    ungriddedLBound=(/1/), &
-                                   ungriddedUBound=(/lsoil_target/), rc=rc)
+                                   ungriddedUBound=(/nlyr/), rc=rc)
  if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
     call error_handler("IN FieldCreate", rc)
 
@@ -3187,7 +3269,7 @@
                                    staggerloc=ESMF_STAGGERLOC_CENTER, &
                                    name="soilm_liq_target_grid", &
                                    ungriddedLBound=(/1/), &
-                                   ungriddedUBound=(/lsoil_target/), rc=rc)
+                                   ungriddedUBound=(/nlyr/), rc=rc)
  if(ESMF_logFoundError(rcToCheck=rc,msg=ESMF_LOGERR_PASSTHRU,line=__LINE__,file=__FILE__)) &
     call error_handler("IN FieldCreate", rc)
 
@@ -3609,7 +3691,7 @@
                         terrain_land,soilt_climo, mask)
 
  use model_grid, only                  : i_target,j_target, lsoil_target
- use program_setup, only               : external_model, input_type
+ use program_setup, only               : external_model, input_type, lsoil_input
  use search_util
 
  implicit none
@@ -3632,8 +3714,9 @@
  integer, parameter              :: SOTYP_LAND_FIELD_NUM = 224
  integer, parameter              :: SST_FIELD_NUM = 11
  integer, parameter              :: TERRAIN_FIELD_NUM= 7
- integer :: j,k, rc, ndims
+ integer :: j,k, rc, ndims, nlyr
 
+ nlyr = lsoil_input
  
  do k = 1,num_field
    call ESMF_FieldBundleGet(bundle_target,k,temp_field, rc=rc)
@@ -3687,7 +3770,7 @@
         call error_handler("IN FieldScatter", rc)
    else
      if (localpet==0) then
-         allocate(field_data_3d(i_target,j_target,lsoil_target))
+         allocate(field_data_3d(i_target,j_target,nlyr))
      else
          allocate(field_data_3d(0,0,0))
      endif
@@ -3698,7 +3781,7 @@
         call error_handler("IN FieldGather", rc)
         
      if (localpet==0) then 
-       do j = 1, lsoil_target
+       do j = 1, nlyr
          field_data_2d = field_data_3d(:,:,j)
          call search(field_data_2d, mask, i_target, j_target, tile, 21)
          field_data_3d(:,:,j) = field_data_2d
